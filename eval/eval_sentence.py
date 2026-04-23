@@ -25,12 +25,26 @@ def _get_model() -> WhisperModel:
 # ─── 工具函数 ────────────────────────────────────────────
 
 def _normalize(word: str) -> str:
-    """去掉标点、转小写"""
+    """单个 token 级清洗：去标点、转小写。用于 hyp 侧已切好的每个词。"""
     return re.sub(r"[^\w]", "", word).lower()
 
-def _normalize_text(text: str) -> str:
-    """对整句做 normalize，用于 WER 计算"""
-    return " ".join(_normalize(w) for w in text.split())
+def _tokenize(text: str) -> list[str]:
+    """
+    句子级鲁棒分词：把所有非字母/数字字符（标点、连字符、全角符号等）
+    都视为分隔符，统一小写。
+
+      "Hello!world"   → ["hello", "world"]
+      "one, two"      → ["one", "two"]
+      "well-done"     → ["well", "done"]
+      "it's great"    → ["its", "great"]    # 撇号先去除再切分，保持与 _normalize 行为一致
+      "TTS…running"   → ["tts", "running"]
+
+    这样 ref 侧不再依赖空白符是否规范，与 hyp 侧（Whisper 已按词边界切好）
+    的口径保持对齐。
+    """
+    # 先消除撇号（it's / it’s → its），再按非字母数字字符切分
+    cleaned = text.lower().replace("'", "").replace("\u2019", "")
+    return re.findall(r"\w+", cleaned)
 
 def _estimate_syllables(word: str) -> int:
     """
@@ -481,7 +495,8 @@ def evaluate(ref_text: str, audio_path: str, *, scorer: str | None = None) -> di
     if scorer is None:
         scorer = os.getenv("PRONUNCIATION_SCORER", SCORER_HEURISTIC)
 
-    ref_norm_words = [_normalize(w) for w in ref_text.split()]
+    # 用 _tokenize 而非 ref_text.split()：标点贴词（"Hello!world"）时也能正确切分
+    ref_norm_words = _tokenize(ref_text)
     clean_path     = preprocess_audio(audio_path)
 
     try:
@@ -543,7 +558,7 @@ def evaluate(ref_text: str, audio_path: str, *, scorer: str | None = None) -> di
 
 
 if __name__ == "__main__":
-    ref = "Hello! This is Kokoro TTS running on Windows."
+    ref = "Hello!This is Kokoro TTS running on Windows."
 
     # 默认启发式方案
     start_time = time.time()
