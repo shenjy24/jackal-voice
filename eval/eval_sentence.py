@@ -1,4 +1,4 @@
-import re
+import re, os
 import numpy as np
 import soundfile as sf
 import editdistance
@@ -158,8 +158,17 @@ def score_words(ref_norm_words: list[str], hyp_result: dict) -> list:
                 score, tag = round(prob * 100), "ok"
             else:
                 score, tag = round(prob * 100), "poor"
-            result.append({"word": ref_w, "score": score, "tag": tag})
+            result.append({"word": ref_w, "hyp_word": hyp_w["word_norm"], "score": score, "tag": tag})
     return result
+
+def _similar(a: str, b: str) -> bool:
+    """两个词足够相似则视为同一个词（只是读错了）"""
+    if a == b:
+        return True
+    # 编辑距离 ≤ 2，且长度差不超过一半
+    if abs(len(a) - len(b)) > max(len(a), len(b)) // 2:
+        return False
+    return editdistance.eval(a, b) <= 2
 
 def _align_words(ref_norm: list[str], hyp: list) -> list:
     """ref 侧传 normalize 后的词，hyp 侧用 word_norm 字段"""
@@ -171,14 +180,14 @@ def _align_words(ref_norm: list[str], hyp: list) -> list:
     for j in range(n + 1): dp[0][j] = j
     for i in range(1, m + 1):
         for j in range(1, n + 1):
-            if ref_norm[i-1] == hyp_norm[j-1]:
+            if _similar(ref_norm[i-1], hyp_norm[j-1]):
                 dp[i][j] = dp[i-1][j-1]
             else:
                 dp[i][j] = 1 + min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1])
 
     aligned, i, j = [], m, n
     while i > 0 or j > 0:
-        if i > 0 and j > 0 and ref_norm[i-1] == hyp_norm[j-1]:
+        if i > 0 and j > 0 and _similar(ref_norm[i-1], hyp_norm[j-1]):
             aligned.append((ref_norm[i-1], hyp[j-1]))
             i -= 1; j -= 1
         elif i > 0 and (j == 0 or dp[i-1][j] <= dp[i][j-1]):
@@ -208,19 +217,23 @@ def _generate_feedback(accuracy: dict, fluency: dict) -> list[str]:
 # ─── 主入口 ──────────────────────────────────────────────
 
 def evaluate(ref_text: str, audio_path: str) -> dict:
-    # ① 统一在入口做 normalize，后续所有方法共用
+    # 统一在入口做 normalize，后续所有方法共用
     ref_norm_words = [_normalize(w) for w in ref_text.split()]
 
-    # ② 音频预处理（统一格式，Whisper 和 Praat 共用同一文件）
+    # 音频预处理（统一格式，Whisper 和 Praat 共用同一文件）
     clean_path = preprocess_audio(audio_path)
 
-    # ③ 转录（hyp 词已含 word_norm 字段）
-    transcript = transcribe(clean_path)
+    try:
+        # 转录（hyp 词已含 word_norm 字段）
+        transcript = transcribe(clean_path)
 
-    # ④ 各维度评分，均使用 normalize 后的数据
-    accuracy    = score_accuracy(ref_norm_words, transcript)
-    fluency     = score_fluency(clean_path, transcript["words"])
-    word_scores = score_words(ref_norm_words, transcript)
+        # 各维度评分，均使用 normalize 后的数据
+        accuracy    = score_accuracy(ref_norm_words, transcript)
+        fluency     = score_fluency(clean_path, transcript["words"])
+        word_scores = score_words(ref_norm_words, transcript)
+    finally:
+        if os.path.exists(clean_path):
+            os.remove(clean_path)
 
     overall = accuracy["accuracy_score"] * 0.6 + fluency["fluency_score"] * 0.4
 
