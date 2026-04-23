@@ -1,4 +1,4 @@
-import re, os
+import re, os, time
 import tempfile
 import numpy as np
 import soundfile as sf
@@ -242,7 +242,10 @@ def _wav2vec2_pronunciation_scores(audio_path: str, hyp_words: list) -> list[flo
             scores.append(50.0)
             continue
         avg = sum(char_posteriors) / len(char_posteriors)
-        scores.append(max(0.0, min(100.0, avg * 100.0)))
+        # CTC 后验因大量 blank 帧本身偏低（清晰发音常在 0.5–0.8 区间），
+        # 用 sqrt 做非线性校准，把 0.5→70、0.7→84、0.9→95，更贴近人类直觉。
+        calibrated = avg ** 0.5
+        scores.append(max(0.0, min(100.0, calibrated * 100.0)))
 
     return scores
 
@@ -434,10 +437,26 @@ def _collect_weak_words(word_scores: list, limit: int = 5) -> list:
                 break
     return out
 
-def _generate_feedback(fluency: dict, weak_words: list) -> list[str]:
+def _aggregate_pronunciation(word_scores: list) -> float:
+    """
+    聚合词级发音分为整体发音分 [0, 100]。
+    只取 matched（good / ok / poor）的词：
+      - missing / inserted：属于"说错/漏说"问题，已被 accuracy 维度覆盖
+      - substituted       ：词都说错了，发音是否清晰难以单独评估，交由 accuracy
+    这样 pronunciation_score 专门衡量"说对的那些词发得清不清楚"。
+    """
+    matched = [w["score"] for w in word_scores if w["tag"] in ("good", "ok", "poor")]
+    if not matched:
+        return 0.0
+    return round(sum(matched) / len(matched), 1)
+
+def _generate_feedback(fluency: dict, pronunciation: float,
+                       weak_words: list) -> list[str]:
     tips = []
     if weak_words:
         tips.append(f"发音需改进的词：{', '.join(weak_words[:3])}")
+    if pronunciation < 70 and not weak_words:
+        tips.append("整体发音清晰度偏低，注意元音饱满、辅音清楚")
     if fluency["words_per_minute"] < 100:
         tips.append("语速偏慢，尝试减少停顿")
     elif fluency["words_per_minute"] > 180:
@@ -471,17 +490,18 @@ def evaluate(ref_text: str, audio_path: str, *, scorer: str | None = None) -> di
         # 空语音兜底
         if not transcript["words"]:
             return {
-                "overall_score":    0.0,
-                "accuracy_score":   0.0,
-                "fluency_score":    0.0,
-                "transcript":       "",
-                "words_per_minute": 0.0,
-                "weak_words":       [],
-                "word_scores":      [{"word": w, "score": 0, "tag": "missing"}
-                                     for w in ref_norm_words],
-                "feedback":         ["未检测到有效语音，请重录"],
-                "scorer":           scorer,
-                "error":            "no_speech_detected",
+                "overall_score":       0.0,
+                "accuracy_score":      0.0,
+                "pronunciation_score": 0.0,
+                "fluency_score":       0.0,
+                "transcript":          "",
+                "words_per_minute":    0.0,
+                "weak_words":          [],
+                "word_scores":         [{"word": w, "score": 0, "tag": "missing"}
+                                        for w in ref_norm_words],
+                "feedback":            ["未检测到有效语音，请重录"],
+                "scorer":              scorer,
+                "error":               "no_speech_detected",
             }
 
         analyzer    = _AudioAnalyzer(clean_path)
@@ -495,19 +515,30 @@ def evaluate(ref_text: str, audio_path: str, *, scorer: str | None = None) -> di
         if os.path.exists(clean_path):
             os.remove(clean_path)
 
-    weak_words = _collect_weak_words(word_scores)
-    overall    = accuracy["accuracy_score"] * 0.6 + fluency["fluency_score"] * 0.4
+    weak_words    = _collect_weak_words(word_scores)
+    pronunciation = _aggregate_pronunciation(word_scores)
+
+    # 三维加权总分：
+    #   accuracy      0.35 —— "说对了没"（词序 / 漏读 / 误读）
+    #   pronunciation 0.35 —— "说对的词发得清不清楚"（真正的发音水平）
+    #   fluency       0.30 —— "语速 / 停顿 / 语调"
+    overall = (
+        accuracy["accuracy_score"] * 0.35 +
+        pronunciation              * 0.35 +
+        fluency["fluency_score"]   * 0.30
+    )
 
     return {
-        "overall_score":    round(overall, 1),
-        "accuracy_score":   accuracy["accuracy_score"],
-        "fluency_score":    fluency["fluency_score"],
-        "transcript":       transcript["text"],
-        "words_per_minute": fluency["words_per_minute"],
-        "weak_words":       weak_words,
-        "word_scores":      word_scores,
-        "feedback":         _generate_feedback(fluency, weak_words),
-        "scorer":           scorer,
+        "overall_score":       round(overall, 1),
+        "accuracy_score":      accuracy["accuracy_score"],
+        "pronunciation_score": pronunciation,
+        "fluency_score":       fluency["fluency_score"],
+        "transcript":          transcript["text"],
+        "words_per_minute":    fluency["words_per_minute"],
+        "weak_words":          weak_words,
+        "word_scores":         word_scores,
+        "feedback":            _generate_feedback(fluency, pronunciation, weak_words),
+        "scorer":              scorer,
     }
 
 
@@ -515,9 +546,15 @@ if __name__ == "__main__":
     ref = "Hello! This is Kokoro TTS running on Windows."
 
     # 默认启发式方案
+    start_time = time.time()
     report = evaluate(ref, "kokoro.wav")
+    end_time = time.time()
     print("[heuristic]", report)
+    print(f"[heuristic] Execution Time: {end_time - start_time:.2f} seconds")
 
     # wav2vec2 方案
+    start_time = time.time()
     report = evaluate(ref, "kokoro.wav", scorer="wav2vec2")
+    end_time = time.time()
     print("[wav2vec2]", report)
+    print(f"[wav2vec2] Execution Time: {end_time - start_time:.2f} seconds")
