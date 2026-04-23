@@ -42,9 +42,9 @@ if __name__ == "__main__":
     # Download the voice files (only need to do this once)
     # download_voice("en", "US", "lessac", "medium")
 
-    # start_time = time.time()
-    # tts()
-    # end_time = time.time()
-    # print(f"Total time: {end_time - start_time:.2f} seconds")
+    start_time = time.time()
+    tts()
+    end_time = time.time()
+    print(f"Total time: {end_time - start_time:.2f} seconds")
 
-    list_voices()
+    # list_voices()
