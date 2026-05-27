@@ -558,7 +558,7 @@ def evaluate(ref_text: str, audio_path: str, *, scorer: str | None = None) -> di
 
 
 if __name__ == "__main__":
-    ref = "Hello!This is Kokoro TTS running on Windows."
+    ref = "Hello!This is Kokoro TTS run on Window."
 
     # 默认启发式方案
     start_time = time.time()
