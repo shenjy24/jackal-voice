@@ -557,19 +557,42 @@ def evaluate(ref_text: str, audio_path: str, *, scorer: str | None = None) -> di
     }
 
 
+# ─── 公共导出（供其他评测模块复用）──────────────────
+# 为跨模块复用创建公开别名，避免重复实现韵律分析等功能
+AudioAnalyzer    = _AudioAnalyzer
+tokenize         = _tokenize
+normalize        = _normalize
+# score_fluency()、preprocess_audio()、transcribe()、PAUSE_THRESHOLD 原名称已是公开的
+
+
 if __name__ == "__main__":
-    ref = "Hello!This is Kokoro TTS run on Window."
+    import requests
+    import tempfile
+
+    # ── 可替换配置 ──
+    ref = "What dishes do you plan to have for Dinner."
+    audio_url = "https://ielts-prod.oss-cn-hangzhou.aliyuncs.com/audio/2b47783f50eb44a2ba55a877fd9ffae9.wav"
+
+    # 下载音频到临时文件
+    resp = requests.get(audio_url)
+    resp.raise_for_status()
+    fd, tmp = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    with open(tmp, "wb") as f:
+        f.write(resp.content)
 
     # 默认启发式方案
     start_time = time.time()
-    report = evaluate(ref, "kokoro.wav")
+    report = evaluate(ref, tmp)
     end_time = time.time()
     print("[heuristic]", report)
     print(f"[heuristic] Execution Time: {end_time - start_time:.2f} seconds")
 
     # wav2vec2 方案
     start_time = time.time()
-    report = evaluate(ref, "kokoro.wav", scorer="wav2vec2")
+    report = evaluate(ref, tmp, scorer="wav2vec2")
     end_time = time.time()
     print("[wav2vec2]", report)
     print(f"[wav2vec2] Execution Time: {end_time - start_time:.2f} seconds")
+
+    os.remove(tmp)
