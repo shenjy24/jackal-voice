@@ -190,6 +190,19 @@ class _Wav2Vec2Holder:
         import torch
         import torchaudio
         from torchaudio.pipelines import WAV2VEC2_ASR_BASE_960H
+
+        # Windows 证书存储可能包含损坏的证书，导致
+        # ssl.SSLError: [ASN1: NOT_ENOUGH_DATA] not enough data
+        # 使用 certifi 的 CA 包替代，绕开 Windows 商店加载
+        import ssl
+        try:
+            import certifi
+            ssl._create_default_https_context = lambda: ssl.create_default_context(
+                cafile=certifi.where()
+            )
+        except ImportError:
+            pass
+
         self._torch     = torch
         self._ta        = torchaudio
         bundle          = WAV2VEC2_ASR_BASE_960H

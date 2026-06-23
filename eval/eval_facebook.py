@@ -69,10 +69,24 @@ _MODEL_NAME = "facebook/wav2vec2-xlsr-53-espeak-cv-ft"
 _TARGET_SR = 16000
 
 
+def _fix_windows_ssl():
+    """Windows 证书存储可能包含损坏的证书，导致
+    ssl.SSLError: [ASN1: NOT_ENOUGH_DATA] not enough data
+    使用 certifi 的 CA 包替代，绕开 Windows 商店加载。"""
+    import ssl
+    try:
+        import certifi
+        ssl._create_default_https_context = lambda: ssl.create_default_context(
+            cafile=certifi.where()
+        )
+    except ImportError:
+        pass
+
 def _get_model():
     """首次调用时加载模型，后续复用（全局缓存）"""
     global _MODEL, _PROCESSOR
     if _MODEL is None:
+        _fix_windows_ssl()
         print(f"正在加载 Wav2Vec2 模型 ({_MODEL_NAME})，请稍候...")
         _PROCESSOR = Wav2Vec2Processor.from_pretrained(_MODEL_NAME)
         _MODEL = Wav2Vec2ForCTC.from_pretrained(_MODEL_NAME)
